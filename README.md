@@ -72,6 +72,9 @@ Additional settings (size, zoom, offsets, hotkeys) are defined in code in `Minim
 
 Requires the **.NET 8 SDK** (or newer). A local Lethal Company install is **not** needed —
 the (stripped & publicized) v81 game assemblies are pulled from NuGet automatically.
+Package restore uses **nuget.org** plus the **BepInEx community feed**
+(`nuget.bepinex.dev`, hosts `BepInEx.Core` and the Unity 2022.3.6x modules) —
+both are declared in the `NuGet.config` at the repo root, so it works out of the box.
 
 ```bash
 dotnet build MIniMap/MIniMap.csproj -c Release
