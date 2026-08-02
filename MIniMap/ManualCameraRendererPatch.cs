@@ -1,26 +1,52 @@
-﻿using GameNetcodeStuff;
-using HarmonyLib;
+using System.Collections.Generic;
+using GameNetcodeStuff;
 using UnityEngine;
 using UnityEngine.UI;
 
 namespace MIniMap
 {
-    [HarmonyPatch(typeof(ManualCameraRenderer))]
-    internal class ManualCameraRendererPatch
+    /// <summary>
+    /// Postfix on ManualCameraRenderer.Update for the ship radar renderer.
+    /// Keeps the map camera alive, applies zoom/auto-rotate and fixes icon rotation.
+    /// </summary>
+    internal static class ManualCameraRendererPatch
     {
-        private static Vector3 defaultEulerAngles = new Vector3(90f, 0f, 0f);
+        private static readonly Vector3 defaultEulerAngles = new Vector3(90f, 0f, 0f);
 
-        [HarmonyPatch("Update")]
-        [HarmonyPostfix]
-        private static void MapCameraLogic(
+        // FindObjectsOfType каждый кадр - лишний мусор для GC; обновляем список раз в секунду.
+        private static TerminalAccessibleObject[] cachedMapObjects = new TerminalAccessibleObject[0];
+        private static float nextMapObjectsRefresh;
+
+        internal static void MapCameraLogic(
+            ManualCameraRenderer __instance,
             ref Camera ___mapCamera,
             ref PlayerControllerB ___targetedPlayer,
-            ref Image ___compassRose)
+            ref Image ___compassRose,
+            ref List<TransformAndName> ___radarTargets,
+            ref int ___targetTransformIndex)
         {
-            // Заменили Data.Enabled на Instance.ConfigEnabled.Value
-            if (!MinimalMinimap.Instance.ConfigEnabled.Value || ___mapCamera == null)
+            if (MinimalMinimap.Instance == null ||
+                !MinimalMinimap.Instance.ConfigEnabled.Value ||
+                ___mapCamera == null)
                 return;
 
+            // Работаем только с ship radar (на случай других ManualCameraRenderer, напр. камер наблюдения).
+            if (__instance.cam != ___mapCamera)
+                return;
+
+            // Если другой мод или сама игра зарезервировали рендерер - не мешаем им.
+            if (__instance.overrideCameraForOtherUse)
+                return;
+
+            // Защита от рассинхрона, если цели удалили из списка (игрок вышел и т.п.)
+            if (___radarTargets != null && ___radarTargets.Count > 0)
+            {
+                if (___targetTransformIndex < 0 || ___targetTransformIndex >= ___radarTargets.Count)
+                    ___targetTransformIndex = 0;
+            }
+
+            // v80+: игра рендерит монитор с пониженным FPS и только пока он виден игроку.
+            // Нам нужна живая миникарта всегда - держим камеру включённой.
             ___mapCamera.enabled = true;
 
             if (___mapCamera.orthographicSize != MinimalMinimap.Data.Zoom)
@@ -45,18 +71,23 @@ namespace MIniMap
                 }
             }
 
-            // Исправление вращения иконок объектов
-            TerminalAccessibleObject[] mapObjects = Object.FindObjectsOfType<TerminalAccessibleObject>();
-            for (int i = 0; i < mapObjects.Length; i++)
+            // Исправление вращения иконок объектов (турели, коды дверей и т.п.)
+            if (Time.time >= nextMapObjectsRefresh)
             {
-                if (mapObjects[i].mapRadarObject != null)
-                {
-                    mapObjects[i].mapRadarObject.transform.eulerAngles = new Vector3(
-                        defaultEulerAngles.x,
-                        ___mapCamera.transform.eulerAngles.y,
-                        defaultEulerAngles.z
-                    );
-                }
+                cachedMapObjects = Object.FindObjectsOfType<TerminalAccessibleObject>();
+                nextMapObjectsRefresh = Time.time + 1f;
+            }
+
+            for (int i = 0; i < cachedMapObjects.Length; i++)
+            {
+                var mapObject = cachedMapObjects[i];
+                if (mapObject == null || mapObject.mapRadarObject == null) continue;
+
+                mapObject.mapRadarObject.transform.eulerAngles = new Vector3(
+                    defaultEulerAngles.x,
+                    ___mapCamera.transform.eulerAngles.y,
+                    defaultEulerAngles.z
+                );
             }
 
             // Поворот компаса

@@ -1,23 +1,33 @@
-﻿using BepInEx;
+using BepInEx;
 using GameNetcodeStuff;
-using HarmonyLib;
 using UnityEngine;
 using UnityEngine.UI;
 
 namespace MIniMap
 {
-    [HarmonyPatch(typeof(PlayerControllerB))]
-    internal class MinimapPatch
+    /// <summary>
+    /// HUD overlay creation, hotkeys and radar target switching.
+    /// Everything here is local-only: the mod never sends RPCs and never
+    /// registers network prefabs, so it is fully client-side and safe to
+    /// use while connected to unmodded (or vanilla) servers.
+    /// </summary>
+    internal static class MinimapPatch
     {
         private static GameObject minimapObject;
         private static RawImage minimapImage;
 
-        [HarmonyPatch("ConnectClientToPlayerObject")]
-        [HarmonyPostfix]
-        private static void CreateMinimap()
+        // Postfix on PlayerControllerB.ConnectClientToPlayerObject
+        internal static void CreateMinimap()
         {
             if (minimapObject != null)
                 return;
+
+            if (HUDManager.Instance == null || HUDManager.Instance.playerScreenTexture == null)
+            {
+                MinimalMinimap.Instance.Logger.LogWarning(
+                    "[Minimap] HUD not ready yet; overlay will be created on the next frame instead.");
+                return;
+            }
 
             minimapObject = new GameObject("MIniMap_UI");
             minimapImage = minimapObject.AddComponent<RawImage>();
@@ -29,10 +39,7 @@ namespace MIniMap
             rt.sizeDelta = new Vector2(MinimalMinimap.Data.Size, MinimalMinimap.Data.Size);
             rt.anchoredPosition = new Vector2(MinimalMinimap.Data.XOffset, MinimalMinimap.Data.YOffset);
 
-            if (StartOfRound.Instance.mapScreen != null)
-            {
-                minimapImage.texture = StartOfRound.Instance.mapScreen.cam.targetTexture;
-            }
+            ApplyRadarTexture();
 
             minimapObject.transform.SetParent(HUDManager.Instance.playerScreenTexture.transform, false);
 
@@ -40,14 +47,38 @@ namespace MIniMap
             minimapObject.SetActive(isEnabled);
         }
 
-        [HarmonyPatch("Update")]
-        [HarmonyPostfix]
-        private static void HandleHotkeys(PlayerControllerB __instance)
+        // The minimap simply renders the ship radar camera's RenderTexture.
+        // Grab it lazily in case the ship objects were not ready when the overlay was created.
+        private static void ApplyRadarTexture()
         {
-            if (!__instance.IsOwner || __instance != GameNetworkManager.Instance.localPlayerController) return;
+            if (minimapImage == null || StartOfRound.Instance == null ||
+                StartOfRound.Instance.mapScreen == null || StartOfRound.Instance.mapScreen.cam == null)
+                return;
+
+            if (StartOfRound.Instance.mapScreen.cam.targetTexture != null)
+                minimapImage.texture = StartOfRound.Instance.mapScreen.cam.targetTexture;
+        }
+
+        // Postfix on PlayerControllerB.Update
+        internal static void HandleHotkeys(PlayerControllerB __instance)
+        {
+            if (GameNetworkManager.Instance == null || !__instance.IsOwner ||
+                __instance != GameNetworkManager.Instance.localPlayerController)
+                return;
+
+            // Если HUD успел пересоздаться без нас (или мы его пропустили) - создаём с задержкой.
+            if (minimapObject == null)
+            {
+                CreateMinimap();
+                if (minimapObject == null) return;
+            }
+
+            if (minimapImage != null && minimapImage.texture == null)
+                ApplyRadarTexture();
+
             if (!__instance.isPlayerControlled && !__instance.isPlayerDead) return;
 
-            // F2 - Вкл/Выкл самой миникарты
+            // F2 - вкл/выкл миникарту
             if (UnityInput.Current.GetKeyDown(MinimalMinimap.Data.ToggleKey))
             {
                 bool newState = !MinimalMinimap.Instance.ConfigEnabled.Value;
@@ -57,11 +88,9 @@ namespace MIniMap
 
             if (!MinimalMinimap.Instance.ConfigEnabled.Value) return;
 
-            // Кнопка F3 больше не переключает режим, так как он всегда ON.
-            // Но мы оставляем логику F4 для ручного переключения целей.
+            // F3 - ручное переключение цели радара
             if (UnityInput.Current.GetKeyDown(MinimalMinimap.Data.SwitchKey))
             {
-                // Мы убрали проверку if (FreezeTarget), так как теперь мы всегда в этом режиме
                 SwitchTarget();
             }
 
@@ -86,11 +115,30 @@ namespace MIniMap
             }
         }
 
+        // Prefix on ManualCameraRenderer.SwitchRadarTargetForward:
+        // полностью заменяет игровое переключение цели нашим (без RPC - чисто локально).
+        internal static bool BlockOriginalSwitch()
+        {
+            SwitchTarget();
+            return false;
+        }
+
+        // Prefix on ManualCameraRenderer.SwitchRadarTargetAndSync and
+        // ManualCameraRenderer.SwitchRadarTargetClientRpc:
+        // пока цель заморожена, не даём игре/другим игрокам поменять наш радар-таргет.
+        // Напрямую корутину updateMapTarget больше не блокируем (см. MinimapPatches) -
+        // все разрешённые переключения проходят штатно через ванильную логику.
+        internal static bool BlockSyncedTargetSwitch()
+        {
+            return !MinimalMinimap.Data.FreezeTarget;
+        }
+
         // Вспомогательный метод для поиска игрока (используется при смерти/возрождении)
         private static void SetMapTargetToPlayer(PlayerControllerB target)
         {
-            var map = StartOfRound.Instance.mapScreen;
+            var map = StartOfRound.Instance != null ? StartOfRound.Instance.mapScreen : null;
             if (map == null || target == null || map.targetedPlayer == target) return;
+            if (map.radarTargets == null) return;
 
             for (int i = 0; i < map.radarTargets.Count; i++)
             {
@@ -101,6 +149,7 @@ namespace MIniMap
                     {
                         map.targetTransformIndex = i;
                         map.targetedPlayer = target;
+                        SyncRadarTargetName(map);
                         break;
                     }
                 }
@@ -109,12 +158,13 @@ namespace MIniMap
 
         private static void SwitchTarget()
         {
-            var map = StartOfRound.Instance.mapScreen;
+            var map = StartOfRound.Instance != null ? StartOfRound.Instance.mapScreen : null;
             if (map == null || map.radarTargets == null || map.radarTargets.Count == 0)
                 return;
 
             int count = map.radarTargets.Count;
             int next = map.targetTransformIndex;
+            if (next < 0 || next >= count) next = 0;
 
             for (int i = 0; i < count; i++)
             {
@@ -125,7 +175,7 @@ namespace MIniMap
 
                 PlayerControllerB player = t.transform.GetComponent<PlayerControllerB>();
 
-                // Пропускаем мусор
+                // Пропускаем радар-бустеры и прочие не-игровые цели
                 if (player == null) continue;
 
                 // 👇 ВАЖНО: фильтр живых/валидных
@@ -134,32 +184,25 @@ namespace MIniMap
 
                 map.targetTransformIndex = next;
                 map.targetedPlayer = player;
+                SyncRadarTargetName(map);
 
                 return;
             }
         }
 
-        private static bool allowOneUpdate = false;
-
-        [HarmonyPatch(typeof(ManualCameraRenderer), "updateMapTarget")]
-        [HarmonyPrefix]
-        private static bool PreventAutoUpdate()
+        // v80/v81: имя цели на мониторе обновляется только внутри корутины
+        // updateMapTarget, а мы переключаем цель напрямую - обновляем подпись сами.
+        private static void SyncRadarTargetName(ManualCameraRenderer map)
         {
-            if (allowOneUpdate)
-            {
-                allowOneUpdate = false;
-                return true;
-            }
+            if (StartOfRound.Instance == null || StartOfRound.Instance.mapScreenPlayerName == null)
+                return;
+            if (map.radarTargets == null || map.radarTargets.Count == 0)
+                return;
+            if (map.targetTransformIndex < 0 || map.targetTransformIndex >= map.radarTargets.Count)
+                return;
 
-            return !MinimalMinimap.Data.FreezeTarget;
-        }
-
-        [HarmonyPatch(typeof(ManualCameraRenderer), "SwitchRadarTargetForward")]
-        [HarmonyPrefix]
-        private static bool BlockOriginalSwitch()
-        {
-            SwitchTarget(); // твоя логика
-            return false;   // полностью блокируем игру
+            StartOfRound.Instance.mapScreenPlayerName.text =
+                map.radarTargets[map.targetTransformIndex].name ?? "";
         }
     }
 }

@@ -1,20 +1,17 @@
-﻿using BepInEx;
-using BepInEx.Configuration; // Добавлено для работы с конфигом
+using BepInEx;
+using BepInEx.Configuration;
 using HarmonyLib;
 using UnityEngine;
-using Unity.Netcode;
-using System.Reflection;
-using System.Linq;
 
 namespace MIniMap
 {
     [BepInPlugin(MyPluginInfo.PLUGIN_GUID, MyPluginInfo.PLUGIN_NAME, MyPluginInfo.PLUGIN_VERSION)]
+    [BepInProcess("Lethal Company.exe")]
     public class MinimalMinimap : BaseUnityPlugin
     {
         public static MinimalMinimap Instance;
         public static MinimapData Data;
 
-        // Добавляем переменную конфигурации
         public ConfigEntry<bool> ConfigEnabled;
 
         private Harmony harmony;
@@ -24,14 +21,15 @@ namespace MIniMap
             Instance = this;
             Data = new MinimapData();
 
-            // Инициализация конфига: 
             // "General" - секция, "Enabled" - ключ, false - значение по умолчанию (выключено)
-            ConfigEnabled = Config.Bind("General", "Enabled", false, "Enable or disable the minimap");
+            ConfigEnabled = Config.Bind("General", "Enabled", false,
+                "Enable or disable the minimap. Also toggled in-game with F2.");
 
             harmony = new Harmony(MyPluginInfo.PLUGIN_GUID);
-            harmony.PatchAll();
+            MinimapPatches.Apply(harmony, Logger);
 
-            Logger.LogInfo($"Minimal Minimap ({MyPluginInfo.PLUGIN_NAME}) loaded successfully!");
+            Logger.LogInfo($"{MyPluginInfo.PLUGIN_NAME} v{MyPluginInfo.PLUGIN_VERSION} loaded. " +
+                           "Client-side only, safe to use on vanilla servers. Built for Lethal Company v81+.");
         }
     }
 
@@ -39,14 +37,11 @@ namespace MIniMap
     {
         public const string PLUGIN_GUID = "com.diman3012.minimap";
         public const string PLUGIN_NAME = "Minimal Minimap";
-        public const string PLUGIN_VERSION = "1.0.0";
+        public const string PLUGIN_VERSION = "1.2.0";
     }
 
     public class MinimapData
     {
-        // Поле Enabled здесь больше не нужно, так как мы берем его из ConfigEnabled,
-        // но оставим остальные настройки.
-
         // 🔧 НАСТРОЙКИ
         public int Size = 200;
         public float XOffset = -10f;
@@ -56,36 +51,8 @@ namespace MIniMap
 
         // 🎮 УПРАВЛЕНИЕ
         public bool FreezeTarget = true;
-        
+
         public KeyCode SwitchKey = KeyCode.F3;
         public KeyCode ToggleKey = KeyCode.F2;
-    }
-
-    [HarmonyPatch(typeof(NetworkManager))]
-    internal static class NetworkPrefabPatch
-    {
-        [HarmonyPostfix]
-        [HarmonyPatch(nameof(NetworkManager.SetSingleton))]
-        private static void RegisterPrefab()
-        {
-            var prefab = new GameObject(MyPluginInfo.PLUGIN_GUID + " Prefab");
-            prefab.hideFlags |= HideFlags.HideAndDontSave;
-            Object.DontDestroyOnLoad(prefab);
-
-            var networkObject = prefab.AddComponent<NetworkObject>();
-
-            var fieldInfo = typeof(NetworkObject).GetField("GlobalObjectIdHash", BindingFlags.Instance | BindingFlags.NonPublic);
-            if (fieldInfo != null)
-            {
-                fieldInfo.SetValue(networkObject, GetHash(MyPluginInfo.PLUGIN_GUID));
-            }
-
-            NetworkManager.Singleton.PrefabHandler.AddNetworkPrefab(prefab);
-        }
-
-        private static uint GetHash(string value)
-        {
-            return value?.Aggregate(17u, (current, c) => unchecked((current * 31) ^ c)) ?? 0u;
-        }
     }
 }
