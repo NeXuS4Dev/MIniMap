@@ -95,7 +95,7 @@ CI builds the DLL on every push (`.github/workflows/build.yml`) — grab it from
 | --- | --- |
 | Plugin GUID | `com.diman3012.minimap` |
 | Plugin name | `Minimal Minimap` |
-| Version | `1.2.1` |
+| Version | `1.2.2` |
 | Game version | `v81` (also works on `v80`) |
 | Namespace | `MIniMap` |
 | Networking | none — fully client-side |

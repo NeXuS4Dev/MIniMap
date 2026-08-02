@@ -217,35 +217,51 @@ namespace MIniMap
 
         // F6 diagnostic: writes the full radar state to the BepInEx log so a
         // frozen/blank minimap can be diagnosed from the log file.
+        // NOTE: private game fields must be read via reflection - Mono enforces
+        // member accessibility at runtime (FieldAccessException) even though the
+        // publicized reference assemblies make them look public at compile time.
         private static void DumpRadarState()
         {
             var log = MinimalMinimap.PluginLogger;
             if (log == null) return;
 
-            var sor = StartOfRound.Instance;
-            var map = sor != null ? sor.mapScreen : null;
-            if (sor == null || map == null)
+            try
             {
-                log.LogWarning("[Minimap F6] StartOfRound/mapScreen is null.");
-                return;
-            }
+                var sor = StartOfRound.Instance;
+                var map = sor != null ? sor.mapScreen : null;
+                if (sor == null || map == null)
+                {
+                    log.LogWarning("[Minimap F6] StartOfRound/mapScreen is null.");
+                    return;
+                }
 
-            Camera cam = map.cam;
-            Camera mapCamera = map.mapCamera;
-            log.LogWarning(
-                "[Minimap F6] Radar state dump: " +
-                $"inShipPhase={sor.inShipPhase}, " +
-                $"overrideCameraForOtherUse={map.overrideCameraForOtherUse}, " +
-                $"overrideRadarCameraOnAlways={map.overrideRadarCameraOnAlways}, " +
-                $"screenEnabledOnLocalClient={map.screenEnabledOnLocalClient}, " +
-                $"currentCameraDisabled={map.currentCameraDisabled}, " +
-                $"renderAtLowerFramerate={map.renderAtLowerFramerate}, fps={map.fps}, " +
-                $"cam={(cam != null ? $"enabled={cam.enabled}, pos={cam.transform.position}, targetTexture={(cam.targetTexture != null ? "ok" : "NULL")}" : "NULL")}, " +
-                $"mapCamera={(mapCamera != null ? $"enabled={mapCamera.enabled}, orthoSize={mapCamera.orthographicSize}" : "NULL")}, " +
-                $"cam==mapCamera? {(cam == mapCamera)}, " +
-                $"targetedPlayer={(map.targetedPlayer != null ? map.targetedPlayer.playerUsername : "null")}, " +
-                $"targetTransformIndex={map.targetTransformIndex}/{(map.radarTargets != null ? map.radarTargets.Count : -1)}, " +
-                $"minimapTexture={(minimapImage != null && minimapImage.texture != null ? "bound" : "NULL")}");
+                Camera cam = map.cam;
+                Camera mapCamera = map.mapCamera;
+                log.LogWarning(
+                    "[Minimap F6] Radar state dump: " +
+                    $"inShipPhase={sor.inShipPhase}, " +
+                    $"overrideCameraForOtherUse={map.overrideCameraForOtherUse}, " +
+                    $"overrideRadarCameraOnAlways={map.overrideRadarCameraOnAlways}, " +
+                    $"screenEnabledOnLocalClient={GetPrivateBool(map, "screenEnabledOnLocalClient")}, " +
+                    $"currentCameraDisabled={map.currentCameraDisabled}, " +
+                    $"renderAtLowerFramerate={map.renderAtLowerFramerate}, fps={map.fps}, " +
+                    $"cam={(cam != null ? $"enabled={cam.enabled}, pos={cam.transform.position}, targetTexture={(cam.targetTexture != null ? "ok" : "NULL")}" : "NULL")}, " +
+                    $"mapCamera={(mapCamera != null ? $"enabled={mapCamera.enabled}, orthoSize={mapCamera.orthographicSize}" : "NULL")}, " +
+                    $"cam==mapCamera? {(cam == mapCamera)}, " +
+                    $"targetedPlayer={(map.targetedPlayer != null ? map.targetedPlayer.playerUsername : "null")}, " +
+                    $"targetTransformIndex={map.targetTransformIndex}/{(map.radarTargets != null ? map.radarTargets.Count : -1)}, " +
+                    $"minimapTexture={(minimapImage != null && minimapImage.texture != null ? "bound" : "NULL")}");
+            }
+            catch (System.Exception e)
+            {
+                log.LogError($"[Minimap F6] Dump failed: {e}");
+            }
+        }
+
+        private static object GetPrivateBool(ManualCameraRenderer map, string fieldName)
+        {
+            var field = HarmonyLib.AccessTools.Field(typeof(ManualCameraRenderer), fieldName);
+            return field != null ? field.GetValue(map) : (object)"<not found>";
         }
     }
 }

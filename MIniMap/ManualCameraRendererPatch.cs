@@ -34,9 +34,16 @@ namespace MIniMap
             if (__instance.cam != ___mapCamera)
                 return;
 
-            // Если другой мод или сама игра зарезервировали рендерер - не мешаем им.
-            if (__instance.overrideCameraForOtherUse)
-                return;
+            // Пока идёт раунд (корабль сел), экран карты обязан быть в режиме радара.
+            // Если флаг завис в состоянии "инфо-экран орбиты", ванильный Update
+            // пропускает ВЕСЬ код радара (камера не следует за целью) и картинка
+            // навсегда замирает - снимаем флаг. На орбите (inShipPhase) инфо-экран
+            // является легитимным состоянием и не трогается.
+            if (__instance.overrideCameraForOtherUse &&
+                StartOfRound.Instance != null && !StartOfRound.Instance.inShipPhase)
+            {
+                __instance.overrideCameraForOtherUse = false;
+            }
 
             // Защита от рассинхрона, если цели удалили из списка (игрок вышел и т.п.)
             if (___radarTargets != null && ___radarTargets.Count > 0)
