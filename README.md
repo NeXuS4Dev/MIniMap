@@ -85,9 +85,8 @@ Copy it to `BepInEx/plugins/`.
 
 Alternatively open `MIniMap.slnx` in Visual Studio or Rider and build in **Release**.
 
-A ready-made CI config is included as `build-workflow.example.yml` — move it to
-`.github/workflows/build.yml` to have GitHub Actions build the DLL on every push
-(downloadable from the workflow artifacts).
+CI builds the DLL on every push (`.github/workflows/build.yml`) — grab it from the
+**Actions → Build → Artifacts** section on GitHub.
 
 ## Technical details
 
