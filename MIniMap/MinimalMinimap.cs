@@ -48,7 +48,7 @@ namespace MIniMap
     {
         public const string PLUGIN_GUID = "com.diman3012.minimap";
         public const string PLUGIN_NAME = "Minimal Minimap";
-        public const string PLUGIN_VERSION = "1.2.4";
+        public const string PLUGIN_VERSION = "1.2.5";
     }
 
     public class MinimapData

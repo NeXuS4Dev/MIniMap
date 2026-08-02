@@ -23,6 +23,12 @@ namespace MIniMap
         internal static long ShipRadarRunCount;
         internal static float LastShipRadarRunTime;
 
+        // Микроскоп над условиями прохождения стражей для корабельного радара:
+        // тикает ли обновление mapScreen вообще и какая именно проверка его отсекает.
+        internal static long MapScreenTickCount;
+        internal static float LastMapScreenTickTime;
+        internal static string LastMapScreenRejectReason = "never seen";
+
         // Детект "фантомных" переключений конфиг-хранилища BepInEx: если значение
         // Enabled в файле поменялось без нашего F2 (hot-reload, гонка записи), логируем.
         private static bool? lastSeenConfigValue;
@@ -38,6 +44,14 @@ namespace MIniMap
         {
             PostfixRunCount++;
 
+            bool isShipScreen = StartOfRound.Instance != null &&
+                                ReferenceEquals(__instance, StartOfRound.Instance.mapScreen);
+            if (isShipScreen)
+            {
+                MapScreenTickCount++;
+                LastMapScreenTickTime = Time.time;
+            }
+
             bool configValue = MinimalMinimap.Instance != null &&
                                MinimalMinimap.Instance.ConfigEnabled != null &&
                                MinimalMinimap.Instance.ConfigEnabled.Value;
@@ -52,13 +66,29 @@ namespace MIniMap
 
             if (MinimalMinimap.Instance == null ||
                 MinimalMinimap.Data == null ||
-                !MinimalMinimap.Data.RuntimeEnabled ||
-                ___mapCamera == null)
+                !MinimalMinimap.Data.RuntimeEnabled)
+            {
+                if (isShipScreen) LastMapScreenRejectReason = "runtimeDisabled";
                 return;
+            }
 
-            // Работаем только с ship radar (на случай других ManualCameraRenderer, напр. камер наблюдения).
-            if (__instance.cam != ___mapCamera)
+            if (___mapCamera == null ||
+                (__instance.cam != ___mapCamera && !isShipScreen))
+            {
+                if (isShipScreen)
+                {
+                    LastMapScreenRejectReason = ___mapCamera == null
+                        ? "mapCamera==null"
+                        : $"cam!=mapCamera (cam#{( __instance.cam == null ? -1 : __instance.cam.GetInstanceID())}," +
+                          $" mapCam#{(__instance.mapCamera == null ? -1 : __instance.mapCamera.GetInstanceID())})";
+                }
                 return;
+            }
+
+            if (isShipScreen)
+                LastMapScreenRejectReason = __instance.cam == ___mapCamera
+                    ? "passing"
+                    : "passing via mapScreen-reference (cam!=mapCamera!)";
 
             ShipRadarRunCount++;
             LastShipRadarRunTime = Time.time;

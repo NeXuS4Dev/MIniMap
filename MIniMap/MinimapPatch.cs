@@ -15,6 +15,7 @@ namespace MIniMap
     {
         private static GameObject minimapObject;
         private static RawImage minimapImage;
+        private static GameObject keepAliveObject;
 
         // Уже выбирали цель за текущую жизнь (авто-центрирование на себе или F3)?
         // Сбрасывается при смерти, чтобы после возрождения карта снова встала на игрока.
@@ -82,6 +83,16 @@ namespace MIniMap
             {
                 CreateMinimap();
                 if (minimapObject == null) return;
+            }
+
+            // Отдельный "сторож" камеры радара: его LateUpdate выполняется ПОСЛЕ
+            // всех Update в кадре, поэтому точно удерживает камеру включённой,
+            // независимо от состояния ManualCameraRenderer. Живёт пока жив его
+            // GameObject (погибает при смене сцены - пересоздаём лениво).
+            if (keepAliveObject == null)
+            {
+                keepAliveObject = new GameObject("MIniMap_KeepAlive");
+                keepAliveObject.AddComponent<MinimapKeepAlive>();
             }
 
             // Cheap: only re-assigns when the camera's target texture changed.
@@ -271,6 +282,12 @@ namespace MIniMap
                 string lastShipRun = ManualCameraRendererPatch.ShipRadarRunCount == 0
                     ? "never"
                     : (Time.time - ManualCameraRendererPatch.LastShipRadarRunTime).ToString("F1") + "s ago";
+                string lastMapTick = ManualCameraRendererPatch.MapScreenTickCount == 0
+                    ? "never"
+                    : (Time.time - ManualCameraRendererPatch.LastMapScreenTickTime).ToString("F1") + "s ago";
+                string lastEnforce = MinimapKeepAlive.EnforceCount == 0
+                    ? "never"
+                    : (Time.time - MinimapKeepAlive.LastEnforceTime).ToString("F1") + "s ago";
 
                 log.LogWarning(
                     "[Minimap F6] Radar state dump: " +
@@ -280,6 +297,9 @@ namespace MIniMap
                     $"freezeTarget={MinimalMinimap.Data.FreezeTarget}, selfCentered={selfCenteredThisLife}, " +
                     $"patchRuns={ManualCameraRendererPatch.PostfixRunCount}, " +
                     $"shipRadarRuns={ManualCameraRendererPatch.ShipRadarRunCount}, lastShipRun={lastShipRun}, " +
+                    $"mapScreenTicks={ManualCameraRendererPatch.MapScreenTickCount}, lastMapTick={lastMapTick}, " +
+                    $"mapScreenGate={ManualCameraRendererPatch.LastMapScreenRejectReason}, " +
+                    $"keepAliveTicks={MinimapKeepAlive.Ticks}, keepAliveEnforces={MinimapKeepAlive.EnforceCount}, lastEnforce={lastEnforce}, " +
                     $"inShipPhase={sor.inShipPhase}, " +
                     $"overrideCameraForOtherUse={map.overrideCameraForOtherUse}, " +
                     $"overrideRadarCameraOnAlways={map.overrideRadarCameraOnAlways}, " +
