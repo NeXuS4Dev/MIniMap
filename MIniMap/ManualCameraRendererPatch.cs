@@ -44,6 +44,21 @@ namespace MIniMap
         {
             PostfixRunCount++;
 
+            // Одноразовая "карточка примет" при первом тике патча: доказывает,
+            // какая именно копия сборки выполняет код (защита от двойной
+            // загрузки старой dll из другого каталога) и жив ли Unity-объект
+            // плагина (диагноз "fake-null", см. MinimalMinimap).
+            if (PostfixRunCount == 1)
+            {
+                MinimalMinimap.PluginLogger?.LogInfo(
+                    "[Minimap] Radar patch alive. Fingerprint: " +
+                    $"pluginInstanceAlive={(MinimalMinimap.Instance != null)}, " +
+                    $"dataInitialized={(MinimalMinimap.Data != null)}, " +
+                    $"configEntry={(MinimalMinimap.ConfigEnabled != null ? MinimalMinimap.ConfigEnabled.Value.ToString() : "null")}, " +
+                    $"pluginAsm=\"{typeof(MinimalMinimap).Assembly.Location}\", " +
+                    $"patchAsm=\"{typeof(ManualCameraRendererPatch).Assembly.Location}\"");
+            }
+
             bool isShipScreen = StartOfRound.Instance != null &&
                                 ReferenceEquals(__instance, StartOfRound.Instance.mapScreen);
             if (isShipScreen)
@@ -52,23 +67,38 @@ namespace MIniMap
                 LastMapScreenTickTime = Time.time;
             }
 
-            bool configValue = MinimalMinimap.Instance != null &&
-                               MinimalMinimap.Instance.ConfigEnabled != null &&
-                               MinimalMinimap.Instance.ConfigEnabled.Value;
-            if (lastSeenConfigValue != configValue)
+            // Детект "фантомных" переключений конфиг-хранилища BepInEx. Читается
+            // СТАТИЧЕСКИЙ ConfigEntry - он обычный C#-объект и не зависит от
+            // судьбы Unity-объекта плагина (fake-null Instance).
+            if (MinimalMinimap.ConfigEnabled != null)
             {
-                MinimalMinimap.PluginLogger?.LogWarning(
-                    $"[Minimap] Config file entry now reads Enabled={configValue} " +
-                    $"(runtime state: {(MinimalMinimap.Data != null && MinimalMinimap.Data.RuntimeEnabled ? "ON" : "OFF")}). " +
-                    "Runtime state is authoritative for this session.");
-                lastSeenConfigValue = configValue;
+                bool configValue = MinimalMinimap.ConfigEnabled.Value;
+                if (lastSeenConfigValue != configValue)
+                {
+                    MinimalMinimap.PluginLogger?.LogWarning(
+                        $"[Minimap] Config file entry now reads Enabled={configValue} " +
+                        $"(runtime state: {(MinimalMinimap.Data == null ? "UNINITIALIZED" : (MinimalMinimap.Data.RuntimeEnabled ? "ON" : "OFF"))}). " +
+                        "Runtime state is authoritative for this session.");
+                    lastSeenConfigValue = configValue;
+                }
             }
 
-            if (MinimalMinimap.Instance == null ||
-                MinimalMinimap.Data == null ||
-                !MinimalMinimap.Data.RuntimeEnabled)
+            // НИКОГДА не проверять здесь MinimalMinimap.Instance: это Unity-объект,
+            // и если игра уничтожит его, "Instance == null" навсегда становится
+            // истиной (fake-null), молча убивая всю логику мода при живом патче -
+            // именно так миникарта замирала у части игроков (дампы с причиной
+            // "runtimeDisabled" при RuntimeEnabled=True). Только простые статики.
+            if (!MinimalMinimap.IsEnabled())
             {
                 if (isShipScreen) LastMapScreenRejectReason = "runtimeDisabled";
+                return;
+            }
+
+            // IsEnabled() нарочно fail-open при Data == null (двойная загрузка
+            // сборки), но дальше читаются поля Data - здесь без них никак.
+            if (MinimalMinimap.Data == null)
+            {
+                if (isShipScreen) LastMapScreenRejectReason = "dataUninitialized";
                 return;
             }
 

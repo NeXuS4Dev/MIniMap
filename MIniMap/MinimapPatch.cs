@@ -24,7 +24,7 @@ namespace MIniMap
         // Postfix on PlayerControllerB.ConnectClientToPlayerObject
         internal static void CreateMinimap()
         {
-            if (minimapObject != null)
+            if (minimapObject != null || MinimalMinimap.Data == null)
                 return;
 
             if (HUDManager.Instance == null || HUDManager.Instance.playerScreenTexture == null)
@@ -78,6 +78,11 @@ namespace MIniMap
                 __instance != GameNetworkManager.Instance.localPlayerController)
                 return;
 
+            // Экзотическая двойная загрузка сборки: у работающей копии нет
+            // данных мода - дальше по коду поля Data читаются без проверок.
+            if (MinimalMinimap.Data == null)
+                return;
+
             // Если HUD успел пересоздаться без нас (или мы его пропустили) - создаём с задержкой.
             if (minimapObject == null)
             {
@@ -111,11 +116,15 @@ namespace MIniMap
             if (UnityInput.Current.GetKeyDown(MinimalMinimap.Data.ToggleKey))
             {
                 MinimalMinimap.Data.RuntimeEnabled = !MinimalMinimap.Data.RuntimeEnabled;
-                MinimalMinimap.Instance.ConfigEnabled.Value = MinimalMinimap.Data.RuntimeEnabled;
+                // Конфиг - просто сохранение выбора на будущие запуски. ConfigEntry
+                // статичен (обычный C#-объект) и не зависит от Unity fake-null
+                // Instance-плагина.
+                if (MinimalMinimap.ConfigEnabled != null)
+                    MinimalMinimap.ConfigEnabled.Value = MinimalMinimap.Data.RuntimeEnabled;
                 if (minimapObject != null) minimapObject.SetActive(MinimalMinimap.Data.RuntimeEnabled);
                 MinimalMinimap.PluginLogger?.LogInfo(
                     $"[Minimap] Minimap {(MinimalMinimap.Data.RuntimeEnabled ? "ON" : "OFF")} (F2). " +
-                    $"Config entry reads: {MinimalMinimap.Instance.ConfigEnabled.Value}");
+                    $"Config entry reads: {(MinimalMinimap.ConfigEnabled != null ? MinimalMinimap.ConfigEnabled.Value.ToString() : "null")}");
             }
 
             if (!MinimalMinimap.Data.RuntimeEnabled) return;
@@ -166,7 +175,8 @@ namespace MIniMap
         // все разрешённые переключения проходят штатно через ванильную логику.
         internal static bool BlockSyncedTargetSwitch()
         {
-            return !MinimalMinimap.Data.FreezeTarget;
+            // Без данных мода не мешаем игре вообще (fail-open).
+            return MinimalMinimap.Data == null || !MinimalMinimap.Data.FreezeTarget;
         }
 
         // Вспомогательный метод для поиска игрока (используется при смерти/возрождении).
@@ -276,9 +286,26 @@ namespace MIniMap
                 // patchRuns растёт каждый кадр, если патч камеры жив; shipRadarRuns
                 // растёт только когда мод реально управляет корабельным радаром.
                 bool runtimeOn = MinimalMinimap.Data != null && MinimalMinimap.Data.RuntimeEnabled;
-                bool configOn = MinimalMinimap.Instance != null &&
-                                MinimalMinimap.Instance.ConfigEnabled != null &&
-                                MinimalMinimap.Instance.ConfigEnabled.Value;
+                // ConfigEntry статичен и читается безопасно всегда; Instance -
+                // Unity-объект, поэтому "Instance != null" используется только
+                // как ДИАГНОСТИКА (false = игра уничтожила объект плагина,
+                // легендарный fake-null, из-за которого миникарта раньше молча
+                // отключалась; логика мода от этого больше не зависит).
+                bool? configValue = MinimalMinimap.ConfigEnabled != null
+                    ? MinimalMinimap.ConfigEnabled.Value
+                    : (bool?)null;
+                bool pluginAlive = MinimalMinimap.Instance != null;
+                string dataHash = MinimalMinimap.Data == null
+                    ? "null"
+                    : System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(MinimalMinimap.Data).ToString();
+                // Идентификаторы Assembly-объектов всех классов мода: если они
+                // различаются - в игру загружено несколько копий сборки (старая
+                // dll где-то в профиле), и static-поля живут раздельно.
+                string asmIds =
+                    $"plugin#{System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(typeof(MinimalMinimap).Assembly)}/" +
+                    $"patch#{System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(typeof(MinimapPatch).Assembly)}/" +
+                    $"cam#{System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(typeof(ManualCameraRendererPatch).Assembly)}/" +
+                    $"keep#{System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(typeof(MinimapKeepAlive).Assembly)}";
                 string lastShipRun = ManualCameraRendererPatch.ShipRadarRunCount == 0
                     ? "never"
                     : (Time.time - ManualCameraRendererPatch.LastShipRadarRunTime).ToString("F1") + "s ago";
@@ -292,7 +319,9 @@ namespace MIniMap
                 log.LogWarning(
                     "[Minimap F6] Radar state dump: " +
                     $"runtimeEnabled={runtimeOn}, " +
-                    $"configEntry={configOn}{(configOn != runtimeOn ? " (DRIFT!)" : "")}, " +
+                    $"configEntry={(configValue.HasValue ? configValue.Value.ToString() : "null")}" +
+                    $"{(configValue.HasValue && configValue.Value != runtimeOn ? " (DRIFT - файловый конфиг != рантайм; рантайм главнее)" : "")}, " +
+                    $"pluginInstanceAlive={pluginAlive}, dataHash={dataHash}, asmIds={asmIds}, " +
                     $"overlay={(minimapObject == null ? "MISSING" : (minimapObject.activeSelf ? "active" : "INACTIVE"))}, " +
                     $"freezeTarget={MinimalMinimap.Data.FreezeTarget}, selfCentered={selfCenteredThisLife}, " +
                     $"patchRuns={ManualCameraRendererPatch.PostfixRunCount}, " +
@@ -329,6 +358,25 @@ namespace MIniMap
                               $"camEnabled={(r.cam != null && r.cam.enabled)}; ");
                 }
                 log.LogWarning($"[Minimap F6] {allRenderers.Length} ManualCameraRenderer(s): {sb}");
+
+                // Кто вообще патчит ManualCameraRenderer.Update: если кроме нас
+                // (com.diman3012.minimap) там чужие префиксы/постфиксы - они
+                // могли молча гасить нашу логику или камеру.
+                var mapUpdate = HarmonyLib.AccessTools.Method(typeof(ManualCameraRenderer), "Update");
+                var info = mapUpdate != null ? HarmonyLib.Harmony.GetPatchInfo(mapUpdate) : null;
+                if (info == null)
+                {
+                    log.LogWarning("[Minimap F6] Harmony owners of ManualCameraRenderer.Update: <none!>");
+                }
+                else
+                {
+                    var owners = new System.Text.StringBuilder();
+                    foreach (var p in info.Prefixes) owners.Append("prefix:").Append(p.owner).Append(' ');
+                    foreach (var p in info.Postfixes) owners.Append("postfix:").Append(p.owner).Append(' ');
+                    foreach (var p in info.Transpilers) owners.Append("transpiler:").Append(p.owner).Append(' ');
+                    foreach (var p in info.Finalizers) owners.Append("finalizer:").Append(p.owner).Append(' ');
+                    log.LogWarning($"[Minimap F6] Harmony owners of ManualCameraRenderer.Update: {owners}");
+                }
             }
             catch (System.Exception e)
             {

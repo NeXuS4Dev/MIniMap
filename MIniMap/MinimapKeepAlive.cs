@@ -22,9 +22,11 @@ namespace MIniMap
 
         private void LateUpdate()
         {
-            if (MinimalMinimap.Instance == null ||
-                MinimalMinimap.Data == null ||
-                !MinimalMinimap.Data.RuntimeEnabled)
+            // Никаких проверок через MinimalMinimap.Instance (Unity fake-null,
+            // см. ManualCameraRendererPatch) - только простые статики. Ниже
+            // трогаются только игровые объекты, поля Data не читаются, поэтому
+            // fail-open проверки здесь безопасна.
+            if (!MinimalMinimap.IsEnabled())
                 return;
 
             StartOfRound sor = StartOfRound.Instance;

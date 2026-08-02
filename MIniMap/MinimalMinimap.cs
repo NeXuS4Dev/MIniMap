@@ -10,6 +10,13 @@ namespace MIniMap
     [BepInProcess("Lethal Company.exe")]
     public class MinimalMinimap : BaseUnityPlugin
     {
+        // ВНИМАНИЕ: Instance - это Unity-компонент (MonoBehaviour). Если игра
+        // уничтожит его GameObject, Unity делает объект "почти null": управляемый
+        // код, поля и методы продолжают работать, но проверка "Instance == null"
+        // навсегда возвращает истину. Именно так раньше умирала миникарта: все
+        // стражи опирались на эту проверку и молча отсекали логику при полностью
+        // живом моде. Поэтому Instance НЕ используется ни в одной проверке -
+        // только для диагностики (F6-дамп печатает pluginInstanceAlive).
         public static MinimalMinimap Instance;
         public static MinimapData Data;
 
@@ -17,7 +24,10 @@ namespace MIniMap
         // internal copy for the static patch helpers to write warnings to.
         internal static ManualLogSource PluginLogger;
 
-        public ConfigEntry<bool> ConfigEnabled;
+        // Статическое намеренно: ConfigEntry - обычный C#-объект, принадлежащий
+        // ConfigFile, а не Unity-компонент, поэтому он не умирает вместе с
+        // GameObject'ом плагина (см. замечание про Instance выше).
+        public static ConfigEntry<bool> ConfigEnabled;
 
         private Harmony harmony;
 
@@ -42,13 +52,23 @@ namespace MIniMap
             Logger.LogInfo($"{MyPluginInfo.PLUGIN_NAME} v{MyPluginInfo.PLUGIN_VERSION} loaded. " +
                            "Client-side only, safe to use on vanilla servers. Built for Lethal Company v81+.");
         }
+
+        // Единственный источник правды о том, включён ли мод. Намеренно НЕ
+        // трогает Instance (Unity fake-null, см. выше). Data тоже живёт вне
+        // Unity-жизненного цикла; если она вдруг не инициализирована
+        // (экзотическая двойная загрузка сборки), безопаснее считать мод
+        // включённым, чем молча гасить его, - поэтому проверка fail-open.
+        internal static bool IsEnabled()
+        {
+            return Data == null || Data.RuntimeEnabled;
+        }
     }
 
     public static class MyPluginInfo
     {
         public const string PLUGIN_GUID = "com.diman3012.minimap";
         public const string PLUGIN_NAME = "Minimal Minimap";
-        public const string PLUGIN_VERSION = "1.2.5";
+        public const string PLUGIN_VERSION = "1.2.6";
     }
 
     public class MinimapData
