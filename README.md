@@ -33,6 +33,7 @@ Compatible with game version **v80/v81** (built against the v81 game assemblies)
 | --- | --- | --- |
 | Toggle minimap | `F2` | Show/hide minimap and save state to config |
 | Switch target | `F3` | Cycle to the next valid radar target |
+| Debug dump | `F6` | Write the radar state to the BepInEx log (diagnostics) |
 
 > Minimap is **disabled by default**. Press `F2` once after installing to enable it.
 
@@ -94,7 +95,7 @@ CI builds the DLL on every push (`.github/workflows/build.yml`) — grab it from
 | --- | --- |
 | Plugin GUID | `com.diman3012.minimap` |
 | Plugin name | `Minimal Minimap` |
-| Version | `1.2.0` |
+| Version | `1.2.1` |
 | Game version | `v81` (also works on `v80`) |
 | Namespace | `MIniMap` |
 | Networking | none — fully client-side |

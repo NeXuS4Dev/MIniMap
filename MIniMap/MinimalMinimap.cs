@@ -43,7 +43,7 @@ namespace MIniMap
     {
         public const string PLUGIN_GUID = "com.diman3012.minimap";
         public const string PLUGIN_NAME = "Minimal Minimap";
-        public const string PLUGIN_VERSION = "1.2.0";
+        public const string PLUGIN_VERSION = "1.2.1";
     }
 
     public class MinimapData
@@ -60,5 +60,6 @@ namespace MIniMap
 
         public KeyCode SwitchKey = KeyCode.F3;
         public KeyCode ToggleKey = KeyCode.F2;
+        public KeyCode DebugKey = KeyCode.F6; // дамп состояния радара в лог
     }
 }

@@ -48,15 +48,19 @@ namespace MIniMap
         }
 
         // The minimap simply renders the ship radar camera's RenderTexture.
-        // Grab it lazily in case the ship objects were not ready when the overlay was created.
+        // Keep it bound to whatever targetTexture the camera has RIGHT NOW:
+        // the game can swap/replace render targets at round transitions
+        // (orbit info screen / landing / late join), which otherwise leaves
+        // the minimap showing a stale frozen frame forever.
         private static void ApplyRadarTexture()
         {
             if (minimapImage == null || StartOfRound.Instance == null ||
                 StartOfRound.Instance.mapScreen == null || StartOfRound.Instance.mapScreen.cam == null)
                 return;
 
-            if (StartOfRound.Instance.mapScreen.cam.targetTexture != null)
-                minimapImage.texture = StartOfRound.Instance.mapScreen.cam.targetTexture;
+            Texture current = StartOfRound.Instance.mapScreen.cam.targetTexture;
+            if (current != null && minimapImage.texture != current)
+                minimapImage.texture = current;
         }
 
         // Postfix on PlayerControllerB.Update
@@ -73,8 +77,14 @@ namespace MIniMap
                 if (minimapObject == null) return;
             }
 
-            if (minimapImage != null && minimapImage.texture == null)
-                ApplyRadarTexture();
+            // Cheap: only re-assigns when the camera's target texture changed.
+            ApplyRadarTexture();
+
+            // F6 - отладочный дамп состояния радара в лог (для расследования багов)
+            if (UnityInput.Current.GetKeyDown(MinimalMinimap.Data.DebugKey))
+            {
+                DumpRadarState();
+            }
 
             if (!__instance.isPlayerControlled && !__instance.isPlayerDead) return;
 
@@ -203,6 +213,39 @@ namespace MIniMap
 
             StartOfRound.Instance.mapScreenPlayerName.text =
                 map.radarTargets[map.targetTransformIndex].name ?? "";
+        }
+
+        // F6 diagnostic: writes the full radar state to the BepInEx log so a
+        // frozen/blank minimap can be diagnosed from the log file.
+        private static void DumpRadarState()
+        {
+            var log = MinimalMinimap.PluginLogger;
+            if (log == null) return;
+
+            var sor = StartOfRound.Instance;
+            var map = sor != null ? sor.mapScreen : null;
+            if (sor == null || map == null)
+            {
+                log.LogWarning("[Minimap F6] StartOfRound/mapScreen is null.");
+                return;
+            }
+
+            Camera cam = map.cam;
+            Camera mapCamera = map.mapCamera;
+            log.LogWarning(
+                "[Minimap F6] Radar state dump: " +
+                $"inShipPhase={sor.inShipPhase}, " +
+                $"overrideCameraForOtherUse={map.overrideCameraForOtherUse}, " +
+                $"overrideRadarCameraOnAlways={map.overrideRadarCameraOnAlways}, " +
+                $"screenEnabledOnLocalClient={map.screenEnabledOnLocalClient}, " +
+                $"currentCameraDisabled={map.currentCameraDisabled}, " +
+                $"renderAtLowerFramerate={map.renderAtLowerFramerate}, fps={map.fps}, " +
+                $"cam={(cam != null ? $"enabled={cam.enabled}, pos={cam.transform.position}, targetTexture={(cam.targetTexture != null ? "ok" : "NULL")}" : "NULL")}, " +
+                $"mapCamera={(mapCamera != null ? $"enabled={mapCamera.enabled}, orthoSize={mapCamera.orthographicSize}" : "NULL")}, " +
+                $"cam==mapCamera? {(cam == mapCamera)}, " +
+                $"targetedPlayer={(map.targetedPlayer != null ? map.targetedPlayer.playerUsername : "null")}, " +
+                $"targetTransformIndex={map.targetTransformIndex}/{(map.radarTargets != null ? map.radarTargets.Count : -1)}, " +
+                $"minimapTexture={(minimapImage != null && minimapImage.texture != null ? "bound" : "NULL")}");
         }
     }
 }
