@@ -24,7 +24,7 @@ namespace MIniMap
 
             if (HUDManager.Instance == null || HUDManager.Instance.playerScreenTexture == null)
             {
-                MinimalMinimap.Instance.Logger.LogWarning(
+                MinimalMinimap.PluginLogger?.LogWarning(
                     "[Minimap] HUD not ready yet; overlay will be created on the next frame instead.");
                 return;
             }

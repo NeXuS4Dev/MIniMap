@@ -1,5 +1,6 @@
 using BepInEx;
 using BepInEx.Configuration;
+using BepInEx.Logging;
 using HarmonyLib;
 using UnityEngine;
 
@@ -12,6 +13,10 @@ namespace MIniMap
         public static MinimalMinimap Instance;
         public static MinimapData Data;
 
+        // BepInEx's BaseUnityPlugin.Logger is protected in 5.4.x, so keep an
+        // internal copy for the static patch helpers to write warnings to.
+        internal static ManualLogSource PluginLogger;
+
         public ConfigEntry<bool> ConfigEnabled;
 
         private Harmony harmony;
@@ -20,6 +25,7 @@ namespace MIniMap
         {
             Instance = this;
             Data = new MinimapData();
+            PluginLogger = Logger;
 
             // "General" - секция, "Enabled" - ключ, false - значение по умолчанию (выключено)
             ConfigEnabled = Config.Bind("General", "Enabled", false,
