@@ -1,23 +1,38 @@
-﻿using BepInEx;
+using BepInEx;
 using GameNetcodeStuff;
-using HarmonyLib;
 using UnityEngine;
 using UnityEngine.UI;
 
 namespace MIniMap
 {
-    [HarmonyPatch(typeof(PlayerControllerB))]
-    internal class MinimapPatch
+    /// <summary>
+    /// HUD overlay creation, hotkeys and radar target switching.
+    /// Everything here is local-only: the mod never sends RPCs and never
+    /// registers network prefabs, so it is fully client-side and safe to
+    /// use while connected to unmodded (or vanilla) servers.
+    /// </summary>
+    internal static class MinimapPatch
     {
         private static GameObject minimapObject;
         private static RawImage minimapImage;
+        private static GameObject keepAliveObject;
 
-        [HarmonyPatch("ConnectClientToPlayerObject")]
-        [HarmonyPostfix]
-        private static void CreateMinimap()
+        // Уже выбирали цель за текущую жизнь (авто-центрирование на себе или F3)?
+        // Сбрасывается при смерти, чтобы после возрождения карта снова встала на игрока.
+        private static bool selfCenteredThisLife;
+
+        // Postfix on PlayerControllerB.ConnectClientToPlayerObject
+        internal static void CreateMinimap()
         {
-            if (minimapObject != null)
+            if (minimapObject != null || MinimalMinimap.Data == null)
                 return;
+
+            if (HUDManager.Instance == null || HUDManager.Instance.playerScreenTexture == null)
+            {
+                MinimalMinimap.PluginLogger?.LogWarning(
+                    "[Minimap] HUD not ready yet; overlay will be created on the next frame instead.");
+                return;
+            }
 
             minimapObject = new GameObject("MIniMap_UI");
             minimapImage = minimapObject.AddComponent<RawImage>();
@@ -29,45 +44,102 @@ namespace MIniMap
             rt.sizeDelta = new Vector2(MinimalMinimap.Data.Size, MinimalMinimap.Data.Size);
             rt.anchoredPosition = new Vector2(MinimalMinimap.Data.XOffset, MinimalMinimap.Data.YOffset);
 
-            if (StartOfRound.Instance.mapScreen != null)
-            {
-                minimapImage.texture = StartOfRound.Instance.mapScreen.cam.targetTexture;
-            }
+            ApplyRadarTexture();
 
             minimapObject.transform.SetParent(HUDManager.Instance.playerScreenTexture.transform, false);
 
-            bool isEnabled = MinimalMinimap.Instance.ConfigEnabled.Value;
+            bool isEnabled = MinimalMinimap.Data.RuntimeEnabled;
             minimapObject.SetActive(isEnabled);
+
+            MinimalMinimap.PluginLogger?.LogInfo(
+                $"[Minimap] Overlay created, visible={isEnabled}. Press {MinimalMinimap.Data.ToggleKey} to toggle.");
         }
 
-        [HarmonyPatch("Update")]
-        [HarmonyPostfix]
-        private static void HandleHotkeys(PlayerControllerB __instance)
+        // The minimap simply renders the ship radar camera's RenderTexture.
+        // Keep it bound to whatever targetTexture the camera has RIGHT NOW:
+        // the game can swap/replace render targets at round transitions
+        // (orbit info screen / landing / late join), which otherwise leaves
+        // the minimap showing a stale frozen frame forever.
+        private static void ApplyRadarTexture()
         {
-            if (!__instance.IsOwner || __instance != GameNetworkManager.Instance.localPlayerController) return;
-            if (!__instance.isPlayerControlled && !__instance.isPlayerDead) return;
+            if (minimapImage == null || StartOfRound.Instance == null ||
+                StartOfRound.Instance.mapScreen == null || StartOfRound.Instance.mapScreen.cam == null)
+                return;
 
-            // F2 - Вкл/Выкл самой миникарты
-            if (UnityInput.Current.GetKeyDown(MinimalMinimap.Data.ToggleKey))
+            Texture current = StartOfRound.Instance.mapScreen.cam.targetTexture;
+            if (current != null && minimapImage.texture != current)
+                minimapImage.texture = current;
+        }
+
+        // Postfix on PlayerControllerB.Update
+        internal static void HandleHotkeys(PlayerControllerB __instance)
+        {
+            if (GameNetworkManager.Instance == null || !__instance.IsOwner ||
+                __instance != GameNetworkManager.Instance.localPlayerController)
+                return;
+
+            // Экзотическая двойная загрузка сборки: у работающей копии нет
+            // данных мода - дальше по коду поля Data читаются без проверок.
+            if (MinimalMinimap.Data == null)
+                return;
+
+            // Если HUD успел пересоздаться без нас (или мы его пропустили) - создаём с задержкой.
+            if (minimapObject == null)
             {
-                bool newState = !MinimalMinimap.Instance.ConfigEnabled.Value;
-                MinimalMinimap.Instance.ConfigEnabled.Value = newState;
-                if (minimapObject != null) minimapObject.SetActive(newState);
+                CreateMinimap();
+                if (minimapObject == null) return;
             }
 
-            if (!MinimalMinimap.Instance.ConfigEnabled.Value) return;
+            // Отдельный "сторож" камеры радара: его LateUpdate выполняется ПОСЛЕ
+            // всех Update в кадре, поэтому точно удерживает камеру включённой,
+            // независимо от состояния ManualCameraRenderer. Живёт пока жив его
+            // GameObject (погибает при смене сцены - пересоздаём лениво).
+            if (keepAliveObject == null)
+            {
+                keepAliveObject = new GameObject("MIniMap_KeepAlive");
+                keepAliveObject.AddComponent<MinimapKeepAlive>();
+            }
 
-            // Кнопка F3 больше не переключает режим, так как он всегда ON.
-            // Но мы оставляем логику F4 для ручного переключения целей.
+            // Cheap: only re-assigns when the camera's target texture changed.
+            ApplyRadarTexture();
+
+            // F6 - отладочный дамп состояния радара в лог (для расследования багов)
+            if (UnityInput.Current.GetKeyDown(MinimalMinimap.Data.DebugKey))
+            {
+                DumpRadarState();
+            }
+
+            if (!__instance.isPlayerControlled && !__instance.isPlayerDead) return;
+
+            // F2 - вкл/выкл миникарту.
+            // Сессией управляет RuntimeEnabled; конфиг просто сохраняем для следующих запусков.
+            if (UnityInput.Current.GetKeyDown(MinimalMinimap.Data.ToggleKey))
+            {
+                MinimalMinimap.Data.RuntimeEnabled = !MinimalMinimap.Data.RuntimeEnabled;
+                // Конфиг - просто сохранение выбора на будущие запуски. ConfigEntry
+                // статичен (обычный C#-объект) и не зависит от Unity fake-null
+                // Instance-плагина.
+                if (MinimalMinimap.ConfigEnabled != null)
+                    MinimalMinimap.ConfigEnabled.Value = MinimalMinimap.Data.RuntimeEnabled;
+                if (minimapObject != null) minimapObject.SetActive(MinimalMinimap.Data.RuntimeEnabled);
+                MinimalMinimap.PluginLogger?.LogInfo(
+                    $"[Minimap] Minimap {(MinimalMinimap.Data.RuntimeEnabled ? "ON" : "OFF")} (F2). " +
+                    $"Config entry reads: {(MinimalMinimap.ConfigEnabled != null ? MinimalMinimap.ConfigEnabled.Value.ToString() : "null")}");
+            }
+
+            if (!MinimalMinimap.Data.RuntimeEnabled) return;
+
+            // F3 - ручное переключение цели радара
             if (UnityInput.Current.GetKeyDown(MinimalMinimap.Data.SwitchKey))
             {
-                // Мы убрали проверку if (FreezeTarget), так как теперь мы всегда в этом режиме
                 SwitchTarget();
             }
 
             // Логика поведения при смерти и возрождении
             if (__instance.isPlayerDead)
             {
+                selfCenteredThisLife = false;
+
                 // Если умерли — выключаем заморозку, чтобы следить за живыми
                 if (MinimalMinimap.Data.FreezeTarget)
                     MinimalMinimap.Data.FreezeTarget = false;
@@ -77,20 +149,43 @@ namespace MIniMap
             }
             else
             {
-                // Если возродились, а заморозка еще выключена — включаем обратно и центрируем на себе
+                // Если возродились, а заморозка еще выключена — включаем обратно
                 if (!MinimalMinimap.Data.FreezeTarget)
-                {
                     MinimalMinimap.Data.FreezeTarget = true;
-                    SetMapTargetToPlayer(__instance);
-                }
+
+                // Пока фиксация цели включена, центрируем радар на себе - но только
+                // один раз за жизнь: ручное переключение по F3 потом не перебиваем.
+                if (MinimalMinimap.Data.FreezeTarget && !selfCenteredThisLife)
+                    selfCenteredThisLife = SetMapTargetToPlayer(__instance);
             }
         }
 
-        // Вспомогательный метод для поиска игрока (используется при смерти/возрождении)
-        private static void SetMapTargetToPlayer(PlayerControllerB target)
+        // Prefix on ManualCameraRenderer.SwitchRadarTargetForward:
+        // полностью заменяет игровое переключение цели нашим (без RPC - чисто локально).
+        internal static bool BlockOriginalSwitch()
         {
-            var map = StartOfRound.Instance.mapScreen;
-            if (map == null || target == null || map.targetedPlayer == target) return;
+            SwitchTarget();
+            return false;
+        }
+
+        // Prefix on ManualCameraRenderer.SwitchRadarTargetAndSync and
+        // ManualCameraRenderer.SwitchRadarTargetClientRpc:
+        // пока цель заморожена, не даём игре/другим игрокам поменять наш радар-таргет.
+        // Напрямую корутину updateMapTarget больше не блокируем (см. MinimapPatches) -
+        // все разрешённые переключения проходят штатно через ванильную логику.
+        internal static bool BlockSyncedTargetSwitch()
+        {
+            // Без данных мода не мешаем игре вообще (fail-open).
+            return MinimalMinimap.Data == null || !MinimalMinimap.Data.FreezeTarget;
+        }
+
+        // Вспомогательный метод для поиска игрока (используется при смерти/возрождении).
+        // Возвращает true, если цель фактически установлена (уже стояла или только что переключили).
+        private static bool SetMapTargetToPlayer(PlayerControllerB target)
+        {
+            var map = StartOfRound.Instance != null ? StartOfRound.Instance.mapScreen : null;
+            if (map == null || target == null || map.radarTargets == null) return false;
+            if (map.targetedPlayer == target) return true;
 
             for (int i = 0; i < map.radarTargets.Count; i++)
             {
@@ -101,20 +196,24 @@ namespace MIniMap
                     {
                         map.targetTransformIndex = i;
                         map.targetedPlayer = target;
-                        break;
+                        SyncRadarTargetName(map);
+                        return true;
                     }
                 }
             }
+
+            return false;
         }
 
         private static void SwitchTarget()
         {
-            var map = StartOfRound.Instance.mapScreen;
+            var map = StartOfRound.Instance != null ? StartOfRound.Instance.mapScreen : null;
             if (map == null || map.radarTargets == null || map.radarTargets.Count == 0)
                 return;
 
             int count = map.radarTargets.Count;
             int next = map.targetTransformIndex;
+            if (next < 0 || next >= count) next = 0;
 
             for (int i = 0; i < count; i++)
             {
@@ -125,7 +224,7 @@ namespace MIniMap
 
                 PlayerControllerB player = t.transform.GetComponent<PlayerControllerB>();
 
-                // Пропускаем мусор
+                // Пропускаем радар-бустеры и прочие не-игровые цели
                 if (player == null) continue;
 
                 // 👇 ВАЖНО: фильтр живых/валидных
@@ -134,32 +233,161 @@ namespace MIniMap
 
                 map.targetTransformIndex = next;
                 map.targetedPlayer = player;
+                SyncRadarTargetName(map);
+
+                // Осознанный выбор цели - не перебивать его авто-центрированием на себе.
+                selfCenteredThisLife = true;
+                MinimalMinimap.PluginLogger?.LogInfo($"[Minimap] Radar target -> {map.radarTargets[next].name}");
 
                 return;
             }
         }
 
-        private static bool allowOneUpdate = false;
-
-        [HarmonyPatch(typeof(ManualCameraRenderer), "updateMapTarget")]
-        [HarmonyPrefix]
-        private static bool PreventAutoUpdate()
+        // v80/v81: имя цели на мониторе обновляется только внутри корутины
+        // updateMapTarget, а мы переключаем цель напрямую - обновляем подпись сами.
+        private static void SyncRadarTargetName(ManualCameraRenderer map)
         {
-            if (allowOneUpdate)
-            {
-                allowOneUpdate = false;
-                return true;
-            }
+            if (StartOfRound.Instance == null || StartOfRound.Instance.mapScreenPlayerName == null)
+                return;
+            if (map.radarTargets == null || map.radarTargets.Count == 0)
+                return;
+            if (map.targetTransformIndex < 0 || map.targetTransformIndex >= map.radarTargets.Count)
+                return;
 
-            return !MinimalMinimap.Data.FreezeTarget;
+            StartOfRound.Instance.mapScreenPlayerName.text =
+                map.radarTargets[map.targetTransformIndex].name ?? "";
         }
 
-        [HarmonyPatch(typeof(ManualCameraRenderer), "SwitchRadarTargetForward")]
-        [HarmonyPrefix]
-        private static bool BlockOriginalSwitch()
+        // F6 diagnostic: writes the full radar state to the BepInEx log so a
+        // frozen/blank minimap can be diagnosed from the log file.
+        // NOTE: private game fields must be read via reflection - Mono enforces
+        // member accessibility at runtime (FieldAccessException) even though the
+        // publicized reference assemblies make them look public at compile time.
+        private static void DumpRadarState()
         {
-            SwitchTarget(); // твоя логика
-            return false;   // полностью блокируем игру
+            var log = MinimalMinimap.PluginLogger;
+            if (log == null) return;
+
+            try
+            {
+                var sor = StartOfRound.Instance;
+                var map = sor != null ? sor.mapScreen : null;
+                if (sor == null || map == null)
+                {
+                    log.LogWarning("[Minimap F6] StartOfRound/mapScreen is null.");
+                    return;
+                }
+
+                Camera cam = map.cam;
+                Camera mapCamera = map.mapCamera;
+
+                // Первый блок - состояние САМОГО МОДА: с него начинать чтение дампа.
+                // configEnabled=false или overlay=INACTIVE = миникарта выключена (F2).
+                // patchRuns растёт каждый кадр, если патч камеры жив; shipRadarRuns
+                // растёт только когда мод реально управляет корабельным радаром.
+                bool runtimeOn = MinimalMinimap.Data != null && MinimalMinimap.Data.RuntimeEnabled;
+                // ConfigEntry статичен и читается безопасно всегда; Instance -
+                // Unity-объект, поэтому "Instance != null" используется только
+                // как ДИАГНОСТИКА (false = игра уничтожила объект плагина,
+                // легендарный fake-null, из-за которого миникарта раньше молча
+                // отключалась; логика мода от этого больше не зависит).
+                bool? configValue = MinimalMinimap.ConfigEnabled != null
+                    ? MinimalMinimap.ConfigEnabled.Value
+                    : (bool?)null;
+                bool pluginAlive = MinimalMinimap.Instance != null;
+                string dataHash = MinimalMinimap.Data == null
+                    ? "null"
+                    : System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(MinimalMinimap.Data).ToString();
+                // Идентификаторы Assembly-объектов всех классов мода: если они
+                // различаются - в игру загружено несколько копий сборки (старая
+                // dll где-то в профиле), и static-поля живут раздельно.
+                string asmIds =
+                    $"plugin#{System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(typeof(MinimalMinimap).Assembly)}/" +
+                    $"patch#{System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(typeof(MinimapPatch).Assembly)}/" +
+                    $"cam#{System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(typeof(ManualCameraRendererPatch).Assembly)}/" +
+                    $"keep#{System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(typeof(MinimapKeepAlive).Assembly)}";
+                string lastShipRun = ManualCameraRendererPatch.ShipRadarRunCount == 0
+                    ? "never"
+                    : (Time.time - ManualCameraRendererPatch.LastShipRadarRunTime).ToString("F1") + "s ago";
+                string lastMapTick = ManualCameraRendererPatch.MapScreenTickCount == 0
+                    ? "never"
+                    : (Time.time - ManualCameraRendererPatch.LastMapScreenTickTime).ToString("F1") + "s ago";
+                string lastEnforce = MinimapKeepAlive.EnforceCount == 0
+                    ? "never"
+                    : (Time.time - MinimapKeepAlive.LastEnforceTime).ToString("F1") + "s ago";
+
+                log.LogWarning(
+                    "[Minimap F6] Radar state dump: " +
+                    $"runtimeEnabled={runtimeOn}, " +
+                    $"configEntry={(configValue.HasValue ? configValue.Value.ToString() : "null")}" +
+                    $"{(configValue.HasValue && configValue.Value != runtimeOn ? " (DRIFT - файловый конфиг != рантайм; рантайм главнее)" : "")}, " +
+                    $"pluginInstanceAlive={pluginAlive}, dataHash={dataHash}, asmIds={asmIds}, " +
+                    $"overlay={(minimapObject == null ? "MISSING" : (minimapObject.activeSelf ? "active" : "INACTIVE"))}, " +
+                    $"freezeTarget={MinimalMinimap.Data.FreezeTarget}, selfCentered={selfCenteredThisLife}, " +
+                    $"patchRuns={ManualCameraRendererPatch.PostfixRunCount}, " +
+                    $"shipRadarRuns={ManualCameraRendererPatch.ShipRadarRunCount}, lastShipRun={lastShipRun}, " +
+                    $"mapScreenTicks={ManualCameraRendererPatch.MapScreenTickCount}, lastMapTick={lastMapTick}, " +
+                    $"mapScreenGate={ManualCameraRendererPatch.LastMapScreenRejectReason}, " +
+                    $"keepAliveTicks={MinimapKeepAlive.Ticks}, keepAliveEnforces={MinimapKeepAlive.EnforceCount}, lastEnforce={lastEnforce}, " +
+                    $"inShipPhase={sor.inShipPhase}, " +
+                    $"overrideCameraForOtherUse={map.overrideCameraForOtherUse}, " +
+                    $"overrideRadarCameraOnAlways={map.overrideRadarCameraOnAlways}, " +
+                    $"screenEnabledOnLocalClient={GetPrivateBool(map, "screenEnabledOnLocalClient")}, " +
+                    $"mapCameraMaxFramerate={GetPrivateBool(map, "mapCameraMaxFramerate")}, " +
+                    $"currentCameraDisabled={map.currentCameraDisabled}, " +
+                    $"renderAtLowerFramerate={map.renderAtLowerFramerate}, fps={map.fps}, " +
+                    $"cam={(cam != null ? $"enabled={cam.enabled}, pos={cam.transform.position}, targetTexture={(cam.targetTexture != null ? "ok" : "NULL")}" : "NULL")}, " +
+                    $"mapCamera={(mapCamera != null ? $"enabled={mapCamera.enabled}, orthoSize={mapCamera.orthographicSize}" : "NULL")}, " +
+                    $"cam==mapCamera? {(cam == mapCamera)}, " +
+                    $"targetedPlayer={(map.targetedPlayer != null ? map.targetedPlayer.playerUsername : "null")}, " +
+                    $"targetTransformIndex={map.targetTransformIndex}/{(map.radarTargets != null ? map.radarTargets.Count : -1)}, " +
+                    $"minimapTexture={(minimapImage == null || minimapImage.texture == null
+                        ? "NULL"
+                        : (cam != null && minimapImage.texture == cam.targetTexture ? "bound" : "STALE"))})");
+
+                // Все ManualCameraRenderer в сцене: проверяем, что корабельный радар ровно один
+                // и что StartOfRound.mapScreen указывает на живой объект.
+                var allRenderers = Object.FindObjectsOfType<ManualCameraRenderer>(true);
+                var sb = new System.Text.StringBuilder();
+                foreach (var r in allRenderers)
+                {
+                    if (r == null) continue;
+                    sb.Append(ReferenceEquals(r, map) ? "[mapScreen] " : "[other] ");
+                    sb.Append($"obj={r.gameObject.name}, activeInHierarchy={r.gameObject.activeInHierarchy}, " +
+                              $"behaviourEnabled={r.enabled}, cam==mapCam? {r.cam == r.mapCamera}, " +
+                              $"camEnabled={(r.cam != null && r.cam.enabled)}; ");
+                }
+                log.LogWarning($"[Minimap F6] {allRenderers.Length} ManualCameraRenderer(s): {sb}");
+
+                // Кто вообще патчит ManualCameraRenderer.Update: если кроме нас
+                // (com.diman3012.minimap) там чужие префиксы/постфиксы - они
+                // могли молча гасить нашу логику или камеру.
+                var mapUpdate = HarmonyLib.AccessTools.Method(typeof(ManualCameraRenderer), "Update");
+                var info = mapUpdate != null ? HarmonyLib.Harmony.GetPatchInfo(mapUpdate) : null;
+                if (info == null)
+                {
+                    log.LogWarning("[Minimap F6] Harmony owners of ManualCameraRenderer.Update: <none!>");
+                }
+                else
+                {
+                    var owners = new System.Text.StringBuilder();
+                    foreach (var p in info.Prefixes) owners.Append("prefix:").Append(p.owner).Append(' ');
+                    foreach (var p in info.Postfixes) owners.Append("postfix:").Append(p.owner).Append(' ');
+                    foreach (var p in info.Transpilers) owners.Append("transpiler:").Append(p.owner).Append(' ');
+                    foreach (var p in info.Finalizers) owners.Append("finalizer:").Append(p.owner).Append(' ');
+                    log.LogWarning($"[Minimap F6] Harmony owners of ManualCameraRenderer.Update: {owners}");
+                }
+            }
+            catch (System.Exception e)
+            {
+                log.LogError($"[Minimap F6] Dump failed: {e}");
+            }
+        }
+
+        private static object GetPrivateBool(ManualCameraRenderer map, string fieldName)
+        {
+            var field = HarmonyLib.AccessTools.Field(typeof(ManualCameraRenderer), fieldName);
+            return field != null ? field.GetValue(map) : (object)"<not found>";
         }
     }
 }

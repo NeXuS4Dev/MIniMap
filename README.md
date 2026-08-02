@@ -15,6 +15,7 @@ Inspired by [LethalCompanyMinimap](https://github.com/tyzeron/LethalCompanyMinim
 
 ## Features
 
+- **Client-side only** — no RPCs, no network prefabs, nothing synced with the server or other players. Safe to use while connected to vanilla/unmodded lobbies.
 - **HUD overlay** — radar view in the top-right corner of your screen.
 - **Persistent state** — toggle on/off with `F2`; preference saved in BepInEx config.
 - **Auto-rotate** — map rotates with the current target's view direction.
@@ -22,6 +23,9 @@ Inspired by [LethalCompanyMinimap](https://github.com/tyzeron/LethalCompanyMinim
 - **Target locking** — prevents the game from auto-switching your radar target while the minimap is active.
 - **Manual cycling** — switch between valid radar targets with a hotkey.
 - **Death support** — follows your spectated player when dead; returns to you on respawn.
+- **Update resilient** — every Harmony patch is applied individually, so a future game update can't silently disable the whole mod.
+
+Compatible with game version **v80/v81** (built against the v81 game assemblies).
 
 ## Controls
 
@@ -29,8 +33,10 @@ Inspired by [LethalCompanyMinimap](https://github.com/tyzeron/LethalCompanyMinim
 | --- | --- | --- |
 | Toggle minimap | `F2` | Show/hide minimap and save state to config |
 | Switch target | `F3` | Cycle to the next valid radar target |
+| Debug dump | `F6` | Write the radar state to the BepInEx log (diagnostics) |
 
-> Minimap is **disabled by default**. Press `F2` once after installing to enable it.
+> Minimap is **enabled by default**. Press `F2` anytime to hide or show it; your choice is saved.
+> If you upgraded from an older version and nothing shows, press `F2` once — your config may still contain the old `Enabled = false` default.
 
 ## Installation
 
@@ -60,18 +66,29 @@ BepInEx/config/com.diman3012.minimap.cfg
 
 | Option | Default | Description |
 | --- | --- | --- |
-| `Enabled` | `false` | Whether the minimap is visible (also toggled with `F2`) |
+| `Enabled` | `true` | Whether the minimap is visible (also toggled with `F2`) |
 
 Additional settings (size, zoom, offsets, hotkeys) are defined in code in `MinimapData` inside `MinimalMinimap.cs`.
 
 ## Building from source
 
-Requires **.NET Framework 4.8** and a local Lethal Company install with BepInEx.
+Requires the **.NET 8 SDK** (or newer). A local Lethal Company install is **not** needed —
+the (stripped & publicized) v81 game assemblies are pulled from NuGet automatically.
+Package restore uses **nuget.org** plus the **BepInEx community feed**
+(`nuget.bepinex.dev`, hosts `BepInEx.Core` and the Unity 2022.3.6x modules) —
+both are declared in the `NuGet.config` at the repo root, so it works out of the box.
 
-1. Open `MIniMap.slnx` in Visual Studio or Rider.
-2. Update `HintPath` references in `MIniMap/MIniMap.csproj` to point to your game folder.
-3. Build in **Release** configuration.
-4. Copy `MIniMap/bin/Release/MIniMap.dll` to `BepInEx/plugins/`.
+```bash
+dotnet build MIniMap/MIniMap.csproj -c Release
+```
+
+The plugin is written to `MIniMap/bin/Release/netstandard2.1/MIniMap.dll`.
+Copy it to `BepInEx/plugins/`.
+
+Alternatively open `MIniMap.slnx` in Visual Studio or Rider and build in **Release**.
+
+CI builds the DLL on every push (`.github/workflows/build.yml`) — grab it from the
+**Actions → Build → Artifacts** section on GitHub.
 
 ## Technical details
 
@@ -79,14 +96,17 @@ Requires **.NET Framework 4.8** and a local Lethal Company install with BepInEx.
 | --- | --- |
 | Plugin GUID | `com.diman3012.minimap` |
 | Plugin name | `Minimal Minimap` |
-| Version | `1.1.0` |
+| Version | `1.2.2` |
+| Game version | `v81` (also works on `v80`) |
 | Namespace | `MIniMap` |
+| Networking | none — fully client-side |
 
 **Key files:**
 
-- `MIniMap/MinimalMinimap.cs` — BepInEx plugin, config, network prefab registration.
+- `MIniMap/MinimalMinimap.cs` — BepInEx plugin, config, plugin metadata.
+- `MIniMap/MinimapPatches.cs` — applies Harmony patches individually (per-method, failure-tolerant).
 - `MIniMap/MinimapPatch.cs` — HUD overlay, hotkeys, target switching, death/spectator logic.
-- `MIniMap/ManualCameraRendererPatch.cs` — map camera zoom, auto-rotate, icon correction.
+- `MIniMap/ManualCameraRendererPatch.cs` — map camera zoom, auto-rotate, icon correction, keep-alive.
 
 ## Changelog
 
@@ -100,10 +120,11 @@ This project is licensed under the **GNU Affero General Public License v3.0**. S
 
 ## Русский
 
-Минималистичная миникарта для **Lethal Company**. Радар корабля выводится прямо в HUD — можно следить за картой, не возвращаясь к монитору на корабле.
+Минималистичная миникарта для **Lethal Company** (актуально для **v81**). Радар корабля выводится прямо в HUD — можно следить за картой, не возвращаясь к монитору на корабле.
 
 ### Возможности
 
+- **Полностью клиентский мод** — ничего не отправляется на сервер, работает в ванильных лобби.
 - Миникарта в правом верхнем углу экрана.
 - Включение/выключение по **F2**, состояние сохраняется в конфиге.
 - Автоповорот карты по направлению взгляда цели.
@@ -116,7 +137,7 @@ This project is licensed under the **GNU Affero General Public License v3.0**. S
 1. Установите [BepInEx Pack](https://thunderstore.io/c/lethal-company/p/BepInEx/BepInExPack/).
 2. Скачайте мод с [Thunderstore](https://thunderstore.io/c/lethal-company/p/SHLUHA/minimapa_diman3012/) или соберите из исходников.
 3. Положите `MIniMap.dll` в `Lethal Company/BepInEx/plugins/`.
-4. Запустите игру и нажмите **F2**, чтобы включить миникарту.
+4. Запустите игру — миникарта включена по умолчанию (скрыть/показать — **F2**).
 
 Конфиг: `BepInEx/config/com.diman3012.minimap.cfg`
 
