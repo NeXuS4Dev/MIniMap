@@ -35,7 +35,8 @@ Compatible with game version **v80/v81** (built against the v81 game assemblies)
 | Switch target | `F3` | Cycle to the next valid radar target |
 | Debug dump | `F6` | Write the radar state to the BepInEx log (diagnostics) |
 
-> Minimap is **disabled by default**. Press `F2` once after installing to enable it.
+> Minimap is **enabled by default**. Press `F2` anytime to hide or show it; your choice is saved.
+> If you upgraded from an older version and nothing shows, press `F2` once — your config may still contain the old `Enabled = false` default.
 
 ## Installation
 
@@ -65,7 +66,7 @@ BepInEx/config/com.diman3012.minimap.cfg
 
 | Option | Default | Description |
 | --- | --- | --- |
-| `Enabled` | `false` | Whether the minimap is visible (also toggled with `F2`) |
+| `Enabled` | `true` | Whether the minimap is visible (also toggled with `F2`) |
 
 Additional settings (size, zoom, offsets, hotkeys) are defined in code in `MinimapData` inside `MinimalMinimap.cs`.
 
@@ -136,7 +137,7 @@ This project is licensed under the **GNU Affero General Public License v3.0**. S
 1. Установите [BepInEx Pack](https://thunderstore.io/c/lethal-company/p/BepInEx/BepInExPack/).
 2. Скачайте мод с [Thunderstore](https://thunderstore.io/c/lethal-company/p/SHLUHA/minimapa_diman3012/) или соберите из исходников.
 3. Положите `MIniMap.dll` в `Lethal Company/BepInEx/plugins/`.
-4. Запустите игру и нажмите **F2**, чтобы включить миникарту.
+4. Запустите игру — миникарта включена по умолчанию (скрыть/показать — **F2**).
 
 Конфиг: `BepInEx/config/com.diman3012.minimap.cfg`
 

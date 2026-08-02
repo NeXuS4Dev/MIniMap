@@ -27,8 +27,9 @@ namespace MIniMap
             Data = new MinimapData();
             PluginLogger = Logger;
 
-            // "General" - секция, "Enabled" - ключ, false - значение по умолчанию (выключено)
-            ConfigEnabled = Config.Bind("General", "Enabled", false,
+            // "General" - секция, "Enabled" - ключ, true - миникарта включена по умолчанию.
+            // (По умолчанию false она слишком часто "молча не работала" на свежих профилях.)
+            ConfigEnabled = Config.Bind("General", "Enabled", true,
                 "Enable or disable the minimap. Also toggled in-game with F2.");
 
             harmony = new Harmony(MyPluginInfo.PLUGIN_GUID);
@@ -43,7 +44,7 @@ namespace MIniMap
     {
         public const string PLUGIN_GUID = "com.diman3012.minimap";
         public const string PLUGIN_NAME = "Minimal Minimap";
-        public const string PLUGIN_VERSION = "1.2.2";
+        public const string PLUGIN_VERSION = "1.2.3";
     }
 
     public class MinimapData

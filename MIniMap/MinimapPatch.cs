@@ -16,6 +16,10 @@ namespace MIniMap
         private static GameObject minimapObject;
         private static RawImage minimapImage;
 
+        // Уже выбирали цель за текущую жизнь (авто-центрирование на себе или F3)?
+        // Сбрасывается при смерти, чтобы после возрождения карта снова встала на игрока.
+        private static bool selfCenteredThisLife;
+
         // Postfix on PlayerControllerB.ConnectClientToPlayerObject
         internal static void CreateMinimap()
         {
@@ -45,6 +49,9 @@ namespace MIniMap
 
             bool isEnabled = MinimalMinimap.Instance.ConfigEnabled.Value;
             minimapObject.SetActive(isEnabled);
+
+            MinimalMinimap.PluginLogger?.LogInfo(
+                $"[Minimap] Overlay created, visible={isEnabled}. Press {MinimalMinimap.Data.ToggleKey} to toggle.");
         }
 
         // The minimap simply renders the ship radar camera's RenderTexture.
@@ -94,6 +101,7 @@ namespace MIniMap
                 bool newState = !MinimalMinimap.Instance.ConfigEnabled.Value;
                 MinimalMinimap.Instance.ConfigEnabled.Value = newState;
                 if (minimapObject != null) minimapObject.SetActive(newState);
+                MinimalMinimap.PluginLogger?.LogInfo($"[Minimap] Minimap {(newState ? "ON" : "OFF")} (F2).");
             }
 
             if (!MinimalMinimap.Instance.ConfigEnabled.Value) return;
@@ -107,6 +115,8 @@ namespace MIniMap
             // Логика поведения при смерти и возрождении
             if (__instance.isPlayerDead)
             {
+                selfCenteredThisLife = false;
+
                 // Если умерли — выключаем заморозку, чтобы следить за живыми
                 if (MinimalMinimap.Data.FreezeTarget)
                     MinimalMinimap.Data.FreezeTarget = false;
@@ -116,12 +126,14 @@ namespace MIniMap
             }
             else
             {
-                // Если возродились, а заморозка еще выключена — включаем обратно и центрируем на себе
+                // Если возродились, а заморозка еще выключена — включаем обратно
                 if (!MinimalMinimap.Data.FreezeTarget)
-                {
                     MinimalMinimap.Data.FreezeTarget = true;
-                    SetMapTargetToPlayer(__instance);
-                }
+
+                // Пока фиксация цели включена, центрируем радар на себе - но только
+                // один раз за жизнь: ручное переключение по F3 потом не перебиваем.
+                if (MinimalMinimap.Data.FreezeTarget && !selfCenteredThisLife)
+                    selfCenteredThisLife = SetMapTargetToPlayer(__instance);
             }
         }
 
@@ -143,12 +155,13 @@ namespace MIniMap
             return !MinimalMinimap.Data.FreezeTarget;
         }
 
-        // Вспомогательный метод для поиска игрока (используется при смерти/возрождении)
-        private static void SetMapTargetToPlayer(PlayerControllerB target)
+        // Вспомогательный метод для поиска игрока (используется при смерти/возрождении).
+        // Возвращает true, если цель фактически установлена (уже стояла или только что переключили).
+        private static bool SetMapTargetToPlayer(PlayerControllerB target)
         {
             var map = StartOfRound.Instance != null ? StartOfRound.Instance.mapScreen : null;
-            if (map == null || target == null || map.targetedPlayer == target) return;
-            if (map.radarTargets == null) return;
+            if (map == null || target == null || map.radarTargets == null) return false;
+            if (map.targetedPlayer == target) return true;
 
             for (int i = 0; i < map.radarTargets.Count; i++)
             {
@@ -160,10 +173,12 @@ namespace MIniMap
                         map.targetTransformIndex = i;
                         map.targetedPlayer = target;
                         SyncRadarTargetName(map);
-                        break;
+                        return true;
                     }
                 }
             }
+
+            return false;
         }
 
         private static void SwitchTarget()
@@ -195,6 +210,10 @@ namespace MIniMap
                 map.targetTransformIndex = next;
                 map.targetedPlayer = player;
                 SyncRadarTargetName(map);
+
+                // Осознанный выбор цели - не перебивать его авто-центрированием на себе.
+                selfCenteredThisLife = true;
+                MinimalMinimap.PluginLogger?.LogInfo($"[Minimap] Radar target -> {map.radarTargets[next].name}");
 
                 return;
             }
@@ -237,12 +256,28 @@ namespace MIniMap
 
                 Camera cam = map.cam;
                 Camera mapCamera = map.mapCamera;
+
+                // Первый блок - состояние САМОГО МОДА: с него начинать чтение дампа.
+                // configEnabled=false или overlay=INACTIVE = миникарта выключена (F2).
+                // patchRuns растёт каждый кадр, если патч камеры жив; shipRadarRuns
+                // растёт только когда мод реально управляет корабельным радаром.
+                bool configOn = MinimalMinimap.Instance != null && MinimalMinimap.Instance.ConfigEnabled.Value;
+                string lastShipRun = ManualCameraRendererPatch.ShipRadarRunCount == 0
+                    ? "never"
+                    : (Time.time - ManualCameraRendererPatch.LastShipRadarRunTime).ToString("F1") + "s ago";
+
                 log.LogWarning(
                     "[Minimap F6] Radar state dump: " +
+                    $"configEnabled={configOn}, " +
+                    $"overlay={(minimapObject == null ? "MISSING" : (minimapObject.activeSelf ? "active" : "INACTIVE"))}, " +
+                    $"freezeTarget={MinimalMinimap.Data.FreezeTarget}, selfCentered={selfCenteredThisLife}, " +
+                    $"patchRuns={ManualCameraRendererPatch.PostfixRunCount}, " +
+                    $"shipRadarRuns={ManualCameraRendererPatch.ShipRadarRunCount}, lastShipRun={lastShipRun}, " +
                     $"inShipPhase={sor.inShipPhase}, " +
                     $"overrideCameraForOtherUse={map.overrideCameraForOtherUse}, " +
                     $"overrideRadarCameraOnAlways={map.overrideRadarCameraOnAlways}, " +
                     $"screenEnabledOnLocalClient={GetPrivateBool(map, "screenEnabledOnLocalClient")}, " +
+                    $"mapCameraMaxFramerate={GetPrivateBool(map, "mapCameraMaxFramerate")}, " +
                     $"currentCameraDisabled={map.currentCameraDisabled}, " +
                     $"renderAtLowerFramerate={map.renderAtLowerFramerate}, fps={map.fps}, " +
                     $"cam={(cam != null ? $"enabled={cam.enabled}, pos={cam.transform.position}, targetTexture={(cam.targetTexture != null ? "ok" : "NULL")}" : "NULL")}, " +
@@ -250,7 +285,9 @@ namespace MIniMap
                     $"cam==mapCamera? {(cam == mapCamera)}, " +
                     $"targetedPlayer={(map.targetedPlayer != null ? map.targetedPlayer.playerUsername : "null")}, " +
                     $"targetTransformIndex={map.targetTransformIndex}/{(map.radarTargets != null ? map.radarTargets.Count : -1)}, " +
-                    $"minimapTexture={(minimapImage != null && minimapImage.texture != null ? "bound" : "NULL")}");
+                    $"minimapTexture={(minimapImage == null || minimapImage.texture == null
+                        ? "NULL"
+                        : (cam != null && minimapImage.texture == cam.targetTexture ? "bound" : "STALE"))})");
             }
             catch (System.Exception e)
             {

@@ -17,6 +17,12 @@ namespace MIniMap
         private static TerminalAccessibleObject[] cachedMapObjects = new TerminalAccessibleObject[0];
         private static float nextMapObjectsRefresh;
 
+        // Самодиагностика для F6-дампа: по этим счётчикам сразу видно,
+        // выполняется ли патч вообще и доходит ли он до кода корабельного радара.
+        internal static long PostfixRunCount;
+        internal static long ShipRadarRunCount;
+        internal static float LastShipRadarRunTime;
+
         internal static void MapCameraLogic(
             ManualCameraRenderer __instance,
             ref Camera ___mapCamera,
@@ -25,6 +31,8 @@ namespace MIniMap
             ref List<TransformAndName> ___radarTargets,
             ref int ___targetTransformIndex)
         {
+            PostfixRunCount++;
+
             if (MinimalMinimap.Instance == null ||
                 !MinimalMinimap.Instance.ConfigEnabled.Value ||
                 ___mapCamera == null)
@@ -33,6 +41,9 @@ namespace MIniMap
             // Работаем только с ship radar (на случай других ManualCameraRenderer, напр. камер наблюдения).
             if (__instance.cam != ___mapCamera)
                 return;
+
+            ShipRadarRunCount++;
+            LastShipRadarRunTime = Time.time;
 
             // Пока идёт раунд (корабль сел), экран карты обязан быть в режиме радара.
             // Если флаг завис в состоянии "инфо-экран орбиты", ванильный Update
@@ -53,8 +64,14 @@ namespace MIniMap
             }
 
             // v80+: игра рендерит монитор с пониженным FPS и только пока он виден игроку.
-            // Нам нужна живая миникарта всегда - держим камеру включённой.
-            ___mapCamera.enabled = true;
+            // Вне корабля MeetsCameraEnabledConditions=false -> игра гасит камеру каждый
+            // кадр -> RenderTexture замирает последним кадром. Нам нужна живая миникарта
+            // всегда - держим камеру включённой (оба поля - это один и тот же Camera,
+            // но страхуемся от переименований в будущих версиях игры).
+            if (!__instance.cam.enabled)
+                __instance.cam.enabled = true;
+            if (!___mapCamera.enabled)
+                ___mapCamera.enabled = true;
 
             if (___mapCamera.orthographicSize != MinimalMinimap.Data.Zoom)
             {
