@@ -23,6 +23,11 @@ namespace MIniMap
         internal static long ShipRadarRunCount;
         internal static float LastShipRadarRunTime;
 
+        // Детект "фантомных" переключений конфиг-хранилища BepInEx: если значение
+        // Enabled в файле поменялось без нашего F2 (hot-reload, гонка записи), логируем.
+        private static bool? lastSeenConfigValue;
+        private static bool shipRadarEngagedLogged;
+
         internal static void MapCameraLogic(
             ManualCameraRenderer __instance,
             ref Camera ___mapCamera,
@@ -33,8 +38,21 @@ namespace MIniMap
         {
             PostfixRunCount++;
 
+            bool configValue = MinimalMinimap.Instance != null &&
+                               MinimalMinimap.Instance.ConfigEnabled != null &&
+                               MinimalMinimap.Instance.ConfigEnabled.Value;
+            if (lastSeenConfigValue != configValue)
+            {
+                MinimalMinimap.PluginLogger?.LogWarning(
+                    $"[Minimap] Config file entry now reads Enabled={configValue} " +
+                    $"(runtime state: {(MinimalMinimap.Data != null && MinimalMinimap.Data.RuntimeEnabled ? "ON" : "OFF")}). " +
+                    "Runtime state is authoritative for this session.");
+                lastSeenConfigValue = configValue;
+            }
+
             if (MinimalMinimap.Instance == null ||
-                !MinimalMinimap.Instance.ConfigEnabled.Value ||
+                MinimalMinimap.Data == null ||
+                !MinimalMinimap.Data.RuntimeEnabled ||
                 ___mapCamera == null)
                 return;
 
@@ -44,6 +62,13 @@ namespace MIniMap
 
             ShipRadarRunCount++;
             LastShipRadarRunTime = Time.time;
+
+            if (!shipRadarEngagedLogged)
+            {
+                shipRadarEngagedLogged = true;
+                MinimalMinimap.PluginLogger?.LogInfo(
+                    "[Minimap] Ship radar control engaged - the minimap now stays live everywhere.");
+            }
 
             // Пока идёт раунд (корабль сел), экран карты обязан быть в режиме радара.
             // Если флаг завис в состоянии "инфо-экран орбиты", ванильный Update

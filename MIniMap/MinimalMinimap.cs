@@ -32,6 +32,10 @@ namespace MIniMap
             ConfigEnabled = Config.Bind("General", "Enabled", true,
                 "Enable or disable the minimap. Also toggled in-game with F2.");
 
+            // Конфиг - только стартовое значение и хранилище между запусками.
+            // Внутри сессии эталонным состоянием является RuntimeEnabled (см. MinimapData).
+            Data.RuntimeEnabled = ConfigEnabled.Value;
+
             harmony = new Harmony(MyPluginInfo.PLUGIN_GUID);
             MinimapPatches.Apply(harmony, Logger);
 
@@ -44,7 +48,7 @@ namespace MIniMap
     {
         public const string PLUGIN_GUID = "com.diman3012.minimap";
         public const string PLUGIN_NAME = "Minimal Minimap";
-        public const string PLUGIN_VERSION = "1.2.3";
+        public const string PLUGIN_VERSION = "1.2.4";
     }
 
     public class MinimapData
@@ -58,6 +62,13 @@ namespace MIniMap
 
         // 🎮 УПРАВЛЕНИЕ
         public bool FreezeTarget = true;
+
+        // Вкл/выкл миникарты в ТЕКУЩЕЙ сессии. Инициализируется из конфига при
+        // загрузке, дальше управляется только F2. Все проверки состояния должны
+        // читать ЭТО поле, а не BepInEx-конфиг: hot-reload конфиг-файла и гонки
+        // его записи (F2 сразу сохраняет файл, BepInEx может перечитывать его
+        // асинхронно) не должны молча менять состояние мода посреди игры.
+        public bool RuntimeEnabled = true;
 
         public KeyCode SwitchKey = KeyCode.F3;
         public KeyCode ToggleKey = KeyCode.F2;

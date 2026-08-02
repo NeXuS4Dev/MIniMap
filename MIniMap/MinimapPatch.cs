@@ -47,7 +47,7 @@ namespace MIniMap
 
             minimapObject.transform.SetParent(HUDManager.Instance.playerScreenTexture.transform, false);
 
-            bool isEnabled = MinimalMinimap.Instance.ConfigEnabled.Value;
+            bool isEnabled = MinimalMinimap.Data.RuntimeEnabled;
             minimapObject.SetActive(isEnabled);
 
             MinimalMinimap.PluginLogger?.LogInfo(
@@ -95,16 +95,19 @@ namespace MIniMap
 
             if (!__instance.isPlayerControlled && !__instance.isPlayerDead) return;
 
-            // F2 - вкл/выкл миникарту
+            // F2 - вкл/выкл миникарту.
+            // Сессией управляет RuntimeEnabled; конфиг просто сохраняем для следующих запусков.
             if (UnityInput.Current.GetKeyDown(MinimalMinimap.Data.ToggleKey))
             {
-                bool newState = !MinimalMinimap.Instance.ConfigEnabled.Value;
-                MinimalMinimap.Instance.ConfigEnabled.Value = newState;
-                if (minimapObject != null) minimapObject.SetActive(newState);
-                MinimalMinimap.PluginLogger?.LogInfo($"[Minimap] Minimap {(newState ? "ON" : "OFF")} (F2).");
+                MinimalMinimap.Data.RuntimeEnabled = !MinimalMinimap.Data.RuntimeEnabled;
+                MinimalMinimap.Instance.ConfigEnabled.Value = MinimalMinimap.Data.RuntimeEnabled;
+                if (minimapObject != null) minimapObject.SetActive(MinimalMinimap.Data.RuntimeEnabled);
+                MinimalMinimap.PluginLogger?.LogInfo(
+                    $"[Minimap] Minimap {(MinimalMinimap.Data.RuntimeEnabled ? "ON" : "OFF")} (F2). " +
+                    $"Config entry reads: {MinimalMinimap.Instance.ConfigEnabled.Value}");
             }
 
-            if (!MinimalMinimap.Instance.ConfigEnabled.Value) return;
+            if (!MinimalMinimap.Data.RuntimeEnabled) return;
 
             // F3 - ручное переключение цели радара
             if (UnityInput.Current.GetKeyDown(MinimalMinimap.Data.SwitchKey))
@@ -261,14 +264,18 @@ namespace MIniMap
                 // configEnabled=false или overlay=INACTIVE = миникарта выключена (F2).
                 // patchRuns растёт каждый кадр, если патч камеры жив; shipRadarRuns
                 // растёт только когда мод реально управляет корабельным радаром.
-                bool configOn = MinimalMinimap.Instance != null && MinimalMinimap.Instance.ConfigEnabled.Value;
+                bool runtimeOn = MinimalMinimap.Data != null && MinimalMinimap.Data.RuntimeEnabled;
+                bool configOn = MinimalMinimap.Instance != null &&
+                                MinimalMinimap.Instance.ConfigEnabled != null &&
+                                MinimalMinimap.Instance.ConfigEnabled.Value;
                 string lastShipRun = ManualCameraRendererPatch.ShipRadarRunCount == 0
                     ? "never"
                     : (Time.time - ManualCameraRendererPatch.LastShipRadarRunTime).ToString("F1") + "s ago";
 
                 log.LogWarning(
                     "[Minimap F6] Radar state dump: " +
-                    $"configEnabled={configOn}, " +
+                    $"runtimeEnabled={runtimeOn}, " +
+                    $"configEntry={configOn}{(configOn != runtimeOn ? " (DRIFT!)" : "")}, " +
                     $"overlay={(minimapObject == null ? "MISSING" : (minimapObject.activeSelf ? "active" : "INACTIVE"))}, " +
                     $"freezeTarget={MinimalMinimap.Data.FreezeTarget}, selfCentered={selfCenteredThisLife}, " +
                     $"patchRuns={ManualCameraRendererPatch.PostfixRunCount}, " +
@@ -288,6 +295,20 @@ namespace MIniMap
                     $"minimapTexture={(minimapImage == null || minimapImage.texture == null
                         ? "NULL"
                         : (cam != null && minimapImage.texture == cam.targetTexture ? "bound" : "STALE"))})");
+
+                // Все ManualCameraRenderer в сцене: проверяем, что корабельный радар ровно один
+                // и что StartOfRound.mapScreen указывает на живой объект.
+                var allRenderers = Object.FindObjectsOfType<ManualCameraRenderer>(true);
+                var sb = new System.Text.StringBuilder();
+                foreach (var r in allRenderers)
+                {
+                    if (r == null) continue;
+                    sb.Append(ReferenceEquals(r, map) ? "[mapScreen] " : "[other] ");
+                    sb.Append($"obj={r.gameObject.name}, activeInHierarchy={r.gameObject.activeInHierarchy}, " +
+                              $"behaviourEnabled={r.enabled}, cam==mapCam? {r.cam == r.mapCamera}, " +
+                              $"camEnabled={(r.cam != null && r.cam.enabled)}; ");
+                }
+                log.LogWarning($"[Minimap F6] {allRenderers.Length} ManualCameraRenderer(s): {sb}");
             }
             catch (System.Exception e)
             {
